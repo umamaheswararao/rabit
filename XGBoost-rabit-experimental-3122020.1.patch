@@ -1,0 +1,614 @@
+diff --git a/Makefile b/Makefile
+index dfbdc0b..e76b52e 100644
+--- a/Makefile
++++ b/Makefile
+@@ -4,7 +4,7 @@ RABIT_BUILD_DMLC = 0
+ 
+ export WARNFLAGS= -Wall -Wextra -Wno-unused-parameter -Wno-unknown-pragmas -std=c++11
+ export CFLAGS = -O3 $(WARNFLAGS)
+-export LDFLAGS =-Llib
++export LDFLAGS =-Llib -L/home/xgboost/install/OneCCL/oneccl/build/_install/lib
+ 
+ #download mpi
+ #echo $(shell scripts/mpi.sh)
+@@ -41,7 +41,7 @@ else
+     DMLC=../dmlc-core
+ endif
+ 
+-CFLAGS += -I $(DMLC)/include -I include/
++CFLAGS +=-I $(DMLC)/include -I include/ -I /home/xgboost/install/OneCCL/oneccl/build/_install/include
+ 
+ # build path
+ BPATH=.
+@@ -57,7 +57,7 @@ HEADERS=src/*.h include/rabit/*.h include/rabit/internal/*.h
+ 
+ .PHONY: clean all install mpi python lint doc doxygen
+ 
+-all: lib/librabit.a lib/librabit_mock.a  lib/librabit.so lib/librabit_base.a lib/librabit_mock.so
++all: lib/librabit.a lib/librabit_mock.a lib/librabit.so lib/librabit_base.a lib/librabit_mock.so lib/librabit_empty.a
+ mpi: lib/librabit_mpi.a lib/librabit_mpi.so
+ 
+ $(BPATH)/allreduce_base.o: src/allreduce_base.cc $(HEADERS)
+@@ -69,10 +69,10 @@ $(BPATH)/engine_mock.o: src/engine_mock.cc $(HEADERS)
+ $(BPATH)/engine_base.o: src/engine_base.cc $(HEADERS)
+ $(BPATH)/c_api.o: src/c_api.cc $(HEADERS)
+ 
+-lib/librabit.a lib/librabit.so: $(BPATH)/allreduce_base.o $(BPATH)/allreduce_robust.o $(BPATH)/engine.o $(BPATH)/c_api.o
++lib/librabit.a lib/librabit.so: $(BPATH)/allreduce_base.o $(BPATH)/allreduce_robust.o $(BPATH)/engine.o $(BPATH)/c_api.o /home/xgboost/install/OneCCL/oneccl/build/_install/lib/libccl.a
+ lib/librabit_base.a lib/librabit_base.so: $(BPATH)/allreduce_base.o $(BPATH)/engine_base.o $(BPATH)/c_api.o
+ lib/librabit_mock.a lib/librabit_mock.so: $(BPATH)/allreduce_base.o $(BPATH)/allreduce_robust.o $(BPATH)/engine_mock.o $(BPATH)/c_api.o
+-lib/librabit_empty.a: $(BPATH)/engine_empty.o $(BPATH)/c_api.o
++lib/librabit_empty.a: $(BPATH)/engine_empty.o $(BPATH)/c_api.o /home/xgboost/install/OneCCL/oneccl/build/_install/lib/libccl.a
+ lib/librabit_mpi.a lib/librabit_mpi.so: $(MPIOBJ)
+ 
+ $(OBJ) :
+@@ -82,7 +82,7 @@ $(ALIB):
+ 	ar cr $@ $+
+ 
+ $(SLIB) :
+-	$(CXX) $(CFLAGS) -shared -o $@ $(filter %.cpp %.o %.c %.cc %.a, $^) $(LDFLAGS)
++	$(CXX) $(CFLAGS) -shared -o $@ $(filter %.cpp %.o %.c %.cc %.a, $^) $(LDFLAGS) -L/home/xgboost/install/OneCCL/oneccl/build/_install/lib
+ 
+ $(MPIOBJ) :
+ 	$(MPICXX) -c $(CFLAGS) -I./mpich/include -o $@ $(firstword $(filter %.cpp %.c %.cc, $^) )
+diff --git a/src/engine.cc b/src/engine.cc
+index 4701d2f..02bde84 100644
+--- a/src/engine.cc
++++ b/src/engine.cc
+@@ -9,16 +9,23 @@
+ #define _CRT_SECURE_NO_WARNINGS
+ #define _CRT_SECURE_NO_DEPRECATE
+ #define NOMINMAX
++#define RABIT_USE_ONECCL
+ 
+ #include <memory>
+ #include "rabit/internal/engine.h"
+ #include "allreduce_base.h"
+ #include "allreduce_robust.h"
+ #include "rabit/internal/thread_local.h"
++//#include "allreduce_mock.h"
++#include "engine_empty.h"
++#include <execinfo.h>
+ 
+ namespace rabit {
+ namespace engine {
+-// singleton sync manager
++#ifdef RABIT_USE_ONECCL
++typedef EmptyEngine Manager;
++#else
++
+ #ifndef RABIT_USE_BASE
+ #ifndef RABIT_USE_MOCK
+ typedef AllreduceRobust Manager;
+@@ -26,8 +33,9 @@ typedef AllreduceRobust Manager;
+ typedef AllreduceMock Manager;
+ #endif  // RABIT_USE_MOCK
+ #else
+-typedef AllreduceBase Manager;
++typedef AllreduceMock Manager;
+ #endif  // RABIT_USE_BASE
++#endif //RABIT_USE_ONECCL
+ 
+ /*! \brief entry to to easily hold returning information */
+ struct ThreadLocalEntry {
+@@ -44,12 +52,25 @@ typedef ThreadLocalStore<ThreadLocalEntry> EngineThreadLocal;
+ 
+ /*! \brief intiialize the synchronization module */
+ bool Init(int argc, char *argv[]) {
++  // printf("Engine init called\n");
+   ThreadLocalEntry* e = EngineThreadLocal::Get();
+   if (e->engine.get() == nullptr) {
+     e->initialized = true;
+     e->engine.reset(new Manager());
++    printf("Engine created\n");
++    
++    void* callstack[128];
++     int i, frames = backtrace(callstack, 128);
++     char** strs = backtrace_symbols(callstack, frames);
++     for (i = 0; i < frames; ++i) {
++         printf("%s\n", strs[i]);
++     }
++     free(strs);
++
++
+     return e->engine->Init(argc, argv);
+   } else {
++     printf("Engine already created\n");
+     return true;
+   }
+ }
+@@ -73,30 +94,20 @@ bool Finalize() {
+ /*! \brief singleton method to get engine */
+ IEngine *GetEngine() {
+   // un-initialized default manager.
+-  static AllreduceBase default_manager;
++  // printf("getEngine called\n");
++  static EmptyEngine default_manager;
+   ThreadLocalEntry* e = EngineThreadLocal::Get();
+   IEngine* ptr = e->engine.get();
+   if (ptr == nullptr) {
+     utils::Check(!e->initialized, "the rabit has not been initialized");
+-    return &default_manager;
++     printf("Initing from GetEngine.............\n");
++    Init(NULL,NULL);
++    return GetEngine();
+   } else {
+     return ptr;
+   }
+ }
+ 
+-// perform in-place allgather, on sendrecvbuf
+-void Allgather(void *sendrecvbuf_, size_t total_size,
+-                   size_t slice_begin,
+-                   size_t slice_end,
+-                   size_t size_prev_slice,
+-                   const char* _file,
+-                   const int _line,
+-                   const char* _caller) {
+-  GetEngine()->Allgather(sendrecvbuf_, total_size, slice_begin,
+-    slice_end, size_prev_slice, _file, _line, _caller);
+-}
+-
+-
+ // perform in-place allreduce, on sendrecvbuf
+ void Allreduce_(void *sendrecvbuf,
+                 size_t type_nbytes,
+@@ -109,7 +120,8 @@ void Allreduce_(void *sendrecvbuf,
+                 const char* _file,
+                 const int _line,
+                 const char* _caller) {
+-  GetEngine()->Allreduce(sendrecvbuf, type_nbytes, count, red, prepare_fun,
++   printf("Allreduce_ called.............%d\n", op);
++   GetEngine()->Allreduce(sendrecvbuf, type_nbytes, count, red, prepare_fun,
+     prepare_arg, _file, _line, _caller);
+ }
+ 
+@@ -129,6 +141,18 @@ void ReduceHandle::Init(IEngine::ReduceFunction redfunc, size_t type_nbytes) {
+   redfunc_ = redfunc;
+ }
+ 
++inline int GetOp(mpi::OpType otype) {
++  using namespace mpi;
++  switch (otype) {
++    case kMax: return 1;
++    case kMin: return 2;
++    case kSum: return 3;
++    case kBitwiseOR: return 4;
++  }
++  printf("unknown mpi::OpType\n");
++  return 1;
++}
++
+ void ReduceHandle::Allreduce(void *sendrecvbuf,
+                              size_t type_nbytes, size_t count,
+                              IEngine::PreprocFunction prepare_fun,
+@@ -137,9 +161,17 @@ void ReduceHandle::Allreduce(void *sendrecvbuf,
+                              const int _line,
+                              const char* _caller) {
+   utils::Assert(redfunc_ != NULL, "must intialize handle to call AllReduce");
++  //int *op = reinterpret_cast<int*>(handle_);
++ //engine::mpi::OpType *op = reinterpret_cast<engine::mpi::OpType*>(handle_);
++  
++    
++  
++  printf("ReduceHandle allreduce......\n");
+   GetEngine()->Allreduce(sendrecvbuf, type_nbytes, count,
+                          redfunc_, prepare_fun, prepare_arg,
+                          _file, _line, _caller);
+ }
++
++
+ }  // namespace engine
+ }  // namespace rabit
+diff --git a/src/engine_empty.cc b/src/engine_empty.cc
+index 5cecc03..f423101 100644
+--- a/src/engine_empty.cc
++++ b/src/engine_empty.cc
+@@ -11,6 +11,7 @@
+ #define NOMINMAX
+ 
+ #include "rabit/internal/engine.h"
++#include "engine_empty.h"
+ 
+ namespace rabit {
+ 
+@@ -20,91 +21,21 @@ namespace utils {
+ 
+ namespace engine {
+ /*! \brief EmptyEngine */
+-class EmptyEngine : public IEngine {
+- public:
+-  EmptyEngine(void) {
+-    version_number = 0;
+-  }
+-  virtual void Allgather(void *sendrecvbuf_,
+-                         size_t total_size,
+-                         size_t slice_begin,
+-                         size_t slice_end,
+-                         size_t size_prev_slice,
+-                         const char* _file,
+-                         const int _line,
+-                         const char* _caller) {
+-    utils::Error("EmptyEngine:: Allgather is not supported");
+-  }
+-  virtual int GetRingPrevRank(void) const {
+-    utils::Error("EmptyEngine:: GetRingPrevRank is not supported");
+-    return -1;
+-  }
+-  virtual void Allreduce(void *sendrecvbuf_,
+-                         size_t type_nbytes,
+-                         size_t count,
+-                         ReduceFunction reducer,
+-                         PreprocFunction prepare_fun,
+-                         void *prepare_arg,
+-                         const char* _file,
+-                         const int _line,
+-                         const char* _caller) {
+-    utils::Error("EmptyEngine:: Allreduce is not supported,"\
+-                 "use Allreduce_ instead");
+-  }
+-  virtual void Broadcast(void *sendrecvbuf_, size_t size, int root,
+-                          const char* _file, const int _line, const char* _caller) {
+-  }
+-  virtual void InitAfterException(void) {
+-    utils::Error("EmptyEngine is not fault tolerant");
+-  }
+-  virtual int LoadCheckPoint(Serializable *global_model,
+-                             Serializable *local_model = NULL) {
+-    return 0;
+-  }
+-  virtual void CheckPoint(const Serializable *global_model,
+-                          const Serializable *local_model = NULL) {
+-    version_number += 1;
+-  }
+-  virtual void LazyCheckPoint(const Serializable *global_model) {
+-    version_number += 1;
+-  }
+-  virtual int VersionNumber(void) const {
+-    return version_number;
+-  }
+-  /*! \brief get rank of current node */
+-  virtual int GetRank(void) const {
+-    return 0;
+-  }
+-  /*! \brief get total number of */
+-  virtual int GetWorldSize(void) const {
+-    return 1;
+-  }
+-  /*! \brief whether it is distributed */
+-  virtual bool IsDistributed(void) const {
+-    return false;
+-  }
+-  /*! \brief get the host name of current node */
+-  virtual std::string GetHost(void) const {
+-    return std::string("");
+-  }
+-  virtual void TrackerPrint(const std::string &msg) {
+-    // simply print information into the tracker
+-    utils::Printf("%s", msg.c_str());
+-  }
+-
+- private:
+-  int version_number;
+-};
+ 
+ // singleton sync manager
+ EmptyEngine manager;
+ 
+ /*! \brief intiialize the synchronization module */
+ bool Init(int argc, char *argv[]) {
++  printf("Dummy implementation....doing nothing.............................Engine_Empty.cc");
+   return true;
+ }
+ /*! \brief finalize syncrhonization module */
+-bool Finalize(void) {
++bool Shutdown(void) {
++  return true;
++}
++
++bool Finalize() {
+   return true;
+ }
+ 
+@@ -113,6 +44,7 @@ IEngine *GetEngine(void) {
+   return &manager;
+ }
+ // perform in-place allreduce, on sendrecvbuf
++
+ void Allreduce_(void *sendrecvbuf,
+                 size_t type_nbytes,
+                 size_t count,
+@@ -125,6 +57,7 @@ void Allreduce_(void *sendrecvbuf,
+                 const int _line,
+                 const char* _caller) {
+   if (prepare_fun != NULL) prepare_fun(prepare_arg);
++  printf("Inplace allreduce called ...............................\n");
+ }
+ 
+ // code for reduce handle
+diff --git a/src/engine_empty.h b/src/engine_empty.h
+new file mode 100644
+index 0000000..6714a1c
+--- /dev/null
++++ b/src/engine_empty.h
+@@ -0,0 +1,280 @@
++/*!
++ *  Copyright (c) 2014 by Contributors
++ * \file engine_empty.cc
++ * \brief this file provides a dummy implementation of engine that does nothing
++ *  this file provides a way to fall back to single node program without causing too many dependencies
++ *  This is usually NOT needed, use engine_mpi or engine for real distributed version
++ * \author Tianqi Chen
++ */
++#define _CRT_SECURE_NO_WARNINGS
++#define _CRT_SECURE_NO_DEPRECATE
++#define NOMINMAX
++
++#include "rabit/internal/engine.h"
++#include "/home/xgboost/install/OneCCL/oneccl/build/_install/include/ccl.h"
++#include <iostream>
++#include <stdio.h>
++#include <execinfo.h>
++#include <stdlib.h>
++
++ccl_status_t do_reduction_sum2(const void* in_buf, size_t in_count, void* inout_buf,
++                              size_t* out_count, const ccl_fn_context_t* ctx, ccl_datatype_t dtype)
++{
++   // if(rabit::engine::ReduceHandle::redfunc_!= NULL) printf("redfunc_ is not null......\n");
++    //else { printf("redfunc_ is null.......\n");}
++
++
++
++    printf("do_reduction_sum2 called..........................................................UMA\n");   
++    int idx=0;
++    if (out_count) *out_count = in_count;
++    switch (dtype)
++    {
++        case ccl_dtype_char:
++            for (idx = 0; idx < in_count; idx++)
++            {
++                ((char*)inout_buf)[idx] += ((char*)in_buf)[idx];
++            }
++            break;
++        case ccl_dtype_float:
++            for (idx = 0; idx < in_count; idx++)
++            {
++                ((float*)inout_buf)[idx] += ((float*)in_buf)[idx];
++            }
++            break;
++        default:
++            break;
++    }
++    return ccl_status_success;
++}
++//using namespace ccl;
++namespace rabit {
++/**
++namespace utils {
++  bool STOP_PROCESS_ON_ERROR = true;
++}
++*/
++namespace engine {
++/*! \brief EmptyEngine */
++class EmptyEngine : public IEngine {
++ public: 
++  EmptyEngine(void) {
++    version_number = 0;
++  }
++  bool isInited = false; 
++  
++  
++ // ccl_coll_attr_t coll_attr;
++ // ccl_request_t request;
++ // initialize the manager
++ //bool Init(int argc, char* argv[]);
++ //bool Shutdown(void);
++ //void SetParam(const char *name, const char *val);
++ //void TrackerPrint(const std::string &msg);
++  size_t grank = -1;
++  //static bool isInited = false;
++  virtual bool Init(int argc, char* argv[]){
++     //static bool isInited=false;   
++     printf("EmptyEngine init called\n"); 
++     printf("Env var== %s \n",getenv("CCL_PM_TYPE"));
++     //if(isInited) {return true;}
++     
++     // Just for trace. 
++     void* callstack[128];
++     int i, frames = backtrace(callstack, 128);
++     char** strs = backtrace_symbols(callstack, frames);
++     for (i = 0; i < frames; ++i) {
++         printf("%s\n", strs[i]);
++     }
++     free(strs);
++     // Just for trace.     
++
++     ccl_status_t status = ccl_init();
++     if(status != ccl_status_success) {
++           printf("Init failed....\n");
++     }else{
++          printf("Init success....\n");
++     } 
++     
++     size_t size;
++     size_t rank;
++     //ccl_status_t status = ccl_init();
++     //     //if(status != ccl_status_success) printf("Init failed....");
++     //
++      ccl_get_comm_rank(NULL, &grank);
++     //ccl_get_comm_size(NULL, &size);
++     
++     //coll_attr.prologue_fn = NULL;
++    // coll_attr.epilogue_fn = NULL;
++    // coll_attr.reduction_fn = NULL;
++    // coll_attr.priority = 0;
++    // coll_attr.synchronous = 0;
++    // coll_attr.match_id = "tensor_name";
++     //coll_attr.to_cache = 0;
++     //coll_attr.vector_buf = 0;     
++     
++     isInited = true;
++     printf("EmptyEngine:: CCL_Init called......rank=%d\n",grank);
++     return true;
++  }
++  // shutdown the engine
++  virtual bool Shutdown(void){
++     //Bug reported...we should be able to finalize
++    ccl_finalize();
++    printf("EmptyEngine:: CCL_Finalize from Shutdown called......\n");
++    return true;
++  }
++
++ virtual bool Finalize() {
++   ccl_finalize();
++   printf("EmptyEngine:: CCL_Finalize called......\n");
++   return true;
++ }
++
++ virtual void Allgather(void *sendrecvbuf,
++                         size_t total_size,
++                         size_t slice_begin,
++                         size_t slice_end,
++                         size_t size_prev_slice,
++                         const char* _file = _FILE,
++                         const int _line = _LINE,
++                         const char* _caller = _CALLER){
++
++    printf("EmptyEngine:: Allgather is called at EmptyEngine....\n");
++
++} 
++
++
++ void Allreduce(void *sendrecvbuf_,
++                         size_t type_nbytes,
++                         size_t count,
++                         ReduceFunction reducer,
++                         PreprocFunction prepare_fun,
++                         void *prepare_arg,
++                         const char* _file,
++                         const int _line,
++                         const char* _caller) {
++     if (prepare_fun != NULL) prepare_fun(prepare_arg);
++     if(!isInited){
++      printf("Not initialized yet to call allreduce.........\n");
++     }
++     printf("type_nbytes................... %zu \n", type_nbytes );
++      
++      ccl_coll_attr_t coll_attr;
++      ccl_request_t request;
++      memset(&coll_attr, 0,sizeof(ccl_coll_attr_t));
++
++     coll_attr.reduction_fn = do_reduction_sum2;     
++     ccl_datatype_t type=ccl_dtype_float;
++     if(type_nbytes%8 == 0)
++     {
++        type = ccl_dtype_bfp16;
++     } if(type_nbytes%4 == 0){
++        type = ccl_dtype_int;
++      }else{
++        type = ccl_dtype_char;
++     }
++
++     ccl_allreduce(sendrecvbuf_, sendrecvbuf_, count, type, ccl_reduction_custom, &coll_attr, NULL, NULL, &request);
++     ccl_wait(request);
++     printf("EmptyEngine:: Allreduce is finished at EmptyEngine....\n");
++  }
++
++  virtual void Broadcast(void *sendrecvbuf_, size_t size, int root,
++                          const char* _file, const int _line, const char* _caller) {
++    printf("EmptyEngine: Broad cast called\n");
++     ccl_request_t request;
++     ccl_datatype_t type=ccl_dtype_float;
++     if(size%8 == 0)
++     {
++        type = ccl_dtype_bfp16;
++     } if(size%4 == 0){
++        type = ccl_dtype_int;
++      }else{
++        type = ccl_dtype_char;
++     }
++    ccl_bcast(sendrecvbuf_, size, type, root, NULL, NULL, NULL, &request);
++    ccl_wait(request);
++  }
++
++  void Allreduce_(void *sendrecvbuf,
++                size_t type_nbytes,
++                size_t count,
++                IEngine::ReduceFunction red,
++                mpi::DataType dtype,
++                mpi::OpType op,
++                IEngine::PreprocFunction prepare_fun,
++                void *prepare_arg,
++                const char* _file,
++                const int _line,
++                const char* _caller) {
++    if (prepare_fun != NULL) prepare_fun(prepare_arg);
++  } 
++ 
++  virtual void InitAfterException(void) {
++    utils::Error("EmptyEngine is not fault tolerant");
++  }
++  virtual int LoadCheckPoint(Serializable *global_model,
++                             Serializable *local_model = NULL) {
++    return 0;
++  }
++  virtual void CheckPoint(const Serializable *global_model,
++                          const Serializable *local_model = NULL) {
++    version_number += 1;
++  }
++  virtual void LazyCheckPoint(const Serializable *global_model) {
++    version_number += 1;
++  }
++  virtual int VersionNumber(void) const {
++    return version_number;
++  }
++  virtual int GetRingPrevRank(void) const {
++
++    return 0;
++  }
++  /*! \brief get rank of current node */
++  virtual int GetRank(void) const {
++    
++    size_t rank;
++    printf("GetRank called.....\n"); 
++    
++    //ccl_comm_create(&comm, &comm_attr);
++    ccl_get_comm_rank(NULL, &rank);
++    // auto stream = environment::instance().create_stream();
++    // auto comm = environment::instance().create_communicator();
++    // int rank = comm->rank();
++     //size = comm->size();
++    return rank;
++  }
++  /*! \brief get total number of */
++  virtual int GetWorldSize(void) const {
++    size_t size;
++    ccl_get_comm_size(NULL, &size);
++    //auto stream = environment::instance().create_stream();
++     
++    // auto comm = environment::instance().create_communicator();
++    // int size = comm->size();
++     return size;
++  }
++  /*! \brief whether it is distributed */
++  virtual bool IsDistributed(void) const {
++    return true;
++  }
++  /*! \brief get the host name of current node */
++  virtual std::string GetHost(void) const {
++    return std::string("");
++  }
++  virtual void TrackerPrint(const std::string &msg) {
++    // simply print information into the tracker
++    utils::Printf("%s", msg.c_str());
++  }
++  
++  // singleton sync manager
++
++
++ private:
++  int version_number;
++};
++
++}  // namespace engine
++}  // namespace rabit
