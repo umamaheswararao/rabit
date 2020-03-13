@@ -4,7 +4,7 @@ RABIT_BUILD_DMLC = 0
 
 export WARNFLAGS= -Wall -Wextra -Wno-unused-parameter -Wno-unknown-pragmas -std=c++11
 export CFLAGS = -O3 $(WARNFLAGS)
-export LDFLAGS =-Llib
+export LDFLAGS =-Llib -L/home/xgboost/install/OneCCL/oneccl/build/_install/lib
 
 #download mpi
 #echo $(shell scripts/mpi.sh)
@@ -41,7 +41,7 @@ else
     DMLC=../dmlc-core
 endif
 
-CFLAGS += -I $(DMLC)/include -I include/
+CFLAGS +=-I $(DMLC)/include -I include/ -I /home/xgboost/install/OneCCL/oneccl/build/_install/include
 
 # build path
 BPATH=.
@@ -57,7 +57,7 @@ HEADERS=src/*.h include/rabit/*.h include/rabit/internal/*.h
 
 .PHONY: clean all install mpi python lint doc doxygen
 
-all: lib/librabit.a lib/librabit_mock.a  lib/librabit.so lib/librabit_base.a lib/librabit_mock.so
+all: lib/librabit.a lib/librabit_mock.a lib/librabit.so lib/librabit_base.a lib/librabit_mock.so lib/librabit_empty.a
 mpi: lib/librabit_mpi.a lib/librabit_mpi.so
 
 $(BPATH)/allreduce_base.o: src/allreduce_base.cc $(HEADERS)
@@ -69,10 +69,10 @@ $(BPATH)/engine_mock.o: src/engine_mock.cc $(HEADERS)
 $(BPATH)/engine_base.o: src/engine_base.cc $(HEADERS)
 $(BPATH)/c_api.o: src/c_api.cc $(HEADERS)
 
-lib/librabit.a lib/librabit.so: $(BPATH)/allreduce_base.o $(BPATH)/allreduce_robust.o $(BPATH)/engine.o $(BPATH)/c_api.o
+lib/librabit.a lib/librabit.so: $(BPATH)/allreduce_base.o $(BPATH)/allreduce_robust.o $(BPATH)/engine.o $(BPATH)/c_api.o /home/xgboost/install/OneCCL/oneccl/build/_install/lib/libccl.a
 lib/librabit_base.a lib/librabit_base.so: $(BPATH)/allreduce_base.o $(BPATH)/engine_base.o $(BPATH)/c_api.o
 lib/librabit_mock.a lib/librabit_mock.so: $(BPATH)/allreduce_base.o $(BPATH)/allreduce_robust.o $(BPATH)/engine_mock.o $(BPATH)/c_api.o
-lib/librabit_empty.a: $(BPATH)/engine_empty.o $(BPATH)/c_api.o
+lib/librabit_empty.a: $(BPATH)/engine_empty.o $(BPATH)/c_api.o /home/xgboost/install/OneCCL/oneccl/build/_install/lib/libccl.a
 lib/librabit_mpi.a lib/librabit_mpi.so: $(MPIOBJ)
 
 $(OBJ) :
@@ -82,7 +82,7 @@ $(ALIB):
 	ar cr $@ $+
 
 $(SLIB) :
-	$(CXX) $(CFLAGS) -shared -o $@ $(filter %.cpp %.o %.c %.cc %.a, $^) $(LDFLAGS)
+	$(CXX) $(CFLAGS) -shared -o $@ $(filter %.cpp %.o %.c %.cc %.a, $^) $(LDFLAGS) -L/home/xgboost/install/OneCCL/oneccl/build/_install/lib
 
 $(MPIOBJ) :
 	$(MPICXX) -c $(CFLAGS) -I./mpich/include -o $@ $(firstword $(filter %.cpp %.c %.cc, $^) )

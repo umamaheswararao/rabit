@@ -9,16 +9,23 @@
 #define _CRT_SECURE_NO_WARNINGS
 #define _CRT_SECURE_NO_DEPRECATE
 #define NOMINMAX
+#define RABIT_USE_ONECCL
 
 #include <memory>
 #include "rabit/internal/engine.h"
 #include "allreduce_base.h"
 #include "allreduce_robust.h"
 #include "rabit/internal/thread_local.h"
+//#include "allreduce_mock.h"
+#include "engine_empty.h"
+#include <execinfo.h>
 
 namespace rabit {
 namespace engine {
-// singleton sync manager
+#ifdef RABIT_USE_ONECCL
+typedef EmptyEngine Manager;
+#else
+
 #ifndef RABIT_USE_BASE
 #ifndef RABIT_USE_MOCK
 typedef AllreduceRobust Manager;
@@ -26,8 +33,9 @@ typedef AllreduceRobust Manager;
 typedef AllreduceMock Manager;
 #endif  // RABIT_USE_MOCK
 #else
-typedef AllreduceBase Manager;
+typedef AllreduceMock Manager;
 #endif  // RABIT_USE_BASE
+#endif //RABIT_USE_ONECCL
 
 /*! \brief entry to to easily hold returning information */
 struct ThreadLocalEntry {
@@ -44,12 +52,25 @@ typedef ThreadLocalStore<ThreadLocalEntry> EngineThreadLocal;
 
 /*! \brief intiialize the synchronization module */
 bool Init(int argc, char *argv[]) {
+  // printf("Engine init called\n");
   ThreadLocalEntry* e = EngineThreadLocal::Get();
   if (e->engine.get() == nullptr) {
     e->initialized = true;
     e->engine.reset(new Manager());
+    printf("Engine created\n");
+    
+    void* callstack[128];
+     int i, frames = backtrace(callstack, 128);
+     char** strs = backtrace_symbols(callstack, frames);
+     for (i = 0; i < frames; ++i) {
+         printf("%s\n", strs[i]);
+     }
+     free(strs);
+
+
     return e->engine->Init(argc, argv);
   } else {
+     printf("Engine already created\n");
     return true;
   }
 }
@@ -73,29 +94,19 @@ bool Finalize() {
 /*! \brief singleton method to get engine */
 IEngine *GetEngine() {
   // un-initialized default manager.
-  static AllreduceBase default_manager;
+  // printf("getEngine called\n");
+  static EmptyEngine default_manager;
   ThreadLocalEntry* e = EngineThreadLocal::Get();
   IEngine* ptr = e->engine.get();
   if (ptr == nullptr) {
     utils::Check(!e->initialized, "the rabit has not been initialized");
-    return &default_manager;
+     printf("Initing from GetEngine.............\n");
+    Init(NULL,NULL);
+    return GetEngine();
   } else {
     return ptr;
   }
 }
-
-// perform in-place allgather, on sendrecvbuf
-void Allgather(void *sendrecvbuf_, size_t total_size,
-                   size_t slice_begin,
-                   size_t slice_end,
-                   size_t size_prev_slice,
-                   const char* _file,
-                   const int _line,
-                   const char* _caller) {
-  GetEngine()->Allgather(sendrecvbuf_, total_size, slice_begin,
-    slice_end, size_prev_slice, _file, _line, _caller);
-}
-
 
 // perform in-place allreduce, on sendrecvbuf
 void Allreduce_(void *sendrecvbuf,
@@ -109,7 +120,8 @@ void Allreduce_(void *sendrecvbuf,
                 const char* _file,
                 const int _line,
                 const char* _caller) {
-  GetEngine()->Allreduce(sendrecvbuf, type_nbytes, count, red, prepare_fun,
+   printf("Allreduce_ called.............%d\n", op);
+   GetEngine()->Allreduce(sendrecvbuf, type_nbytes, count, red, prepare_fun,
     prepare_arg, _file, _line, _caller);
 }
 
@@ -129,6 +141,18 @@ void ReduceHandle::Init(IEngine::ReduceFunction redfunc, size_t type_nbytes) {
   redfunc_ = redfunc;
 }
 
+inline int GetOp(mpi::OpType otype) {
+  using namespace mpi;
+  switch (otype) {
+    case kMax: return 1;
+    case kMin: return 2;
+    case kSum: return 3;
+    case kBitwiseOR: return 4;
+  }
+  printf("unknown mpi::OpType\n");
+  return 1;
+}
+
 void ReduceHandle::Allreduce(void *sendrecvbuf,
                              size_t type_nbytes, size_t count,
                              IEngine::PreprocFunction prepare_fun,
@@ -137,9 +161,17 @@ void ReduceHandle::Allreduce(void *sendrecvbuf,
                              const int _line,
                              const char* _caller) {
   utils::Assert(redfunc_ != NULL, "must intialize handle to call AllReduce");
+  //int *op = reinterpret_cast<int*>(handle_);
+ //engine::mpi::OpType *op = reinterpret_cast<engine::mpi::OpType*>(handle_);
+  
+    
+  
+  printf("ReduceHandle allreduce......\n");
   GetEngine()->Allreduce(sendrecvbuf, type_nbytes, count,
                          redfunc_, prepare_fun, prepare_arg,
                          _file, _line, _caller);
 }
+
+
 }  // namespace engine
 }  // namespace rabit
